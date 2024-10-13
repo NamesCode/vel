@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 mod vel {
     use core::fmt;
-    use std::{collections::HashMap, fmt::Display};
+    use std::{
+        collections::{HashMap, HashSet},
+        fmt::Display,
+    };
 
     #[derive(Debug)]
     pub struct ArenaTree<T> {
@@ -82,17 +85,73 @@ mod vel {
         }
     }
 
+    /// The Tag of the element is always the first element in the attributes vector.
+    ///
+    /// If the Tag contains a empty string then this means it is text element.
     #[derive(Debug)]
     pub struct DOMElement<'a> {
+        void_element: bool,
+        attributes: Vec<ElementAttributes<'a>>,
         text: &'a str,
     }
 
     impl<'a> DOMElement<'a> {
-        fn new(text: &'a str) -> Self {
-            DOMElement { text }
+        /// The Tag field MUST be ElementAttributes::Tag()
+        fn new(
+            tag: ElementAttributes<'a>,
+            mut attributes: Vec<ElementAttributes<'a>>,
+            text: &'a str,
+            void_element: bool,
+        ) -> Self {
+            if let ElementAttributes::Tag(_) = tag {
+                attributes.insert(0, tag);
+                DOMElement {
+                    void_element,
+                    attributes,
+                    text,
+                }
+            } else {
+                panic!("Tag field can only be ElementAttributes::Tag()!")
+            }
         }
     }
+
+    #[derive(Debug)]
+    pub enum ElementAttributes<'a> {
+        /// Represents an HTML tag (e.g. "div", "p")
+        Tag(&'a str),
+        /// Represents an element's ID (e.g. "header")
+        Id(&'a str),
+        /// Represents an element's class (e.g. "navbar")
+        Class(&'a str),
+        /// Represents any other attribute (name, value)
+        Other(&'a str, &'a str),
+    }
+
+    /// Test
+    #[derive(Debug)]
+    pub enum EditableField {
+        /// Specifies the nodes text itself is editable
+        Text,
+        /// Specifies the nodes which node attribute is editable
+        Attribute(usize),
+    }
+
     pub type DOM<'a> = ArenaTree<DOMElement<'a>>;
+
+    #[derive(Debug)]
+    pub struct VelDOM<'a> {
+        /// This contains an array of all the nodes which can be substitued for new text
+        editable_nodes: Vec<(usize, EditableField)>,
+        /// The underlying DOM
+        dom: DOM<'a>,
+    }
+
+    impl<'a> VelDOM<'a> {
+        pub fn render(ignore: HashSet<Vec<ElementAttributes>>) {
+            todo!()
+        }
+    }
 
     #[derive(Debug)]
     pub struct VelInstance<'a> {
@@ -120,23 +179,15 @@ mod vel {
             component: &'a str,
             inputs: HashMap<&str, &str>,
             //) -> Result<&Self, Err> {
-        ) -> DOM {
+        ) -> VelDOM {
             println!("{}", component);
             dbg!(&self.components);
             let _page = self
                 .components
                 .get(component)
                 .expect("could get the component numbskull");
-            let mut dom = DOM::new();
-            let mut parents = vec![];
-            parents.push(dom.add_node(None, DOMElement::new("testicles")));
-            parents.push(dom.add_node(None, DOMElement::new("cookie dough")));
-            for _ in 0..3 {
-                for parent in parents.clone() {
-                    parents.push(dom.add_node(Some(parent), DOMElement::new("testicles")));
-                    parents.push(dom.add_node(Some(parent), DOMElement::new("cookie dough")));
-                }
-            }
+            let mut dom = VelDOM::new();
+
             dom
         }
     }

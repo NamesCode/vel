@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "velox"
-version = "0.1.0"
+name = "vel"
+version = "0.0.1"

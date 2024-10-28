@@ -1,5 +1,5 @@
 {
-  description = "Velox: A simple SSG CLI tool inspired by Svelte.";
+  description = "Vel: A web templating library inspired by Svelte";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";

@@ -1,4 +1,13 @@
 [package]
-name = "velox"
-version = "0.1.0"
+name = "vel"
+version = "0.0.1"
+authors = ["Name <lasagna@garfunkles.space>"]
+description = "A web templating library inspired by Svelte"
+# license = "MIT OR Apache-2.0"
+# repository = "https://git.garfunkles.space/vel"
+# documentation = "https://docs.garfunkles.space/vel"
+# homepage = "https://projects.garfunkles.space/vel"
+keywords = ["template", "html", "handlebar", "svelte", "sveltejs", "sveltekit"]
+categories = ["template-engine"]
+include = ["/src/*", "/LICENSES/*", "/README.md"]
 edition = "2021"

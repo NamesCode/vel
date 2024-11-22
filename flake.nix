@@ -17,14 +17,19 @@
     {
       devShells.aarch64-linux.default = pkgs.mkShell {
         nativeBuildInputs = with pkgs; [
+          # Rust tooling
           rustc
           rustfmt
           cargo
           clippy
+
+          # LSPs
           rust-analyzer
+          emmet-language-server
+          nodePackages.vscode-langservers-extracted
         ];
 
-        shellHook = ''echo "You have now entered the dev shell for Velox, exit at any time."'';
+        shellHook = ''echo "You have now entered the dev shell for Vel, exit at any time."'';
       };
     };
 }

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    fmt::{self, Display},
+    error::Error,
+    fmt::{self, Debug, Display},
     str::Chars,
 };
 
@@ -22,6 +23,51 @@ impl<T> ParsedState<T> {
             ParsedState::Parsed(_) => true,
             ParsedState::Unparsed => false,
         }
+    }
+}
+
+pub enum ParsingError {
+    UnclosedTag {
+        value: Vec<String>,
+        //line: usize,
+        //char: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+//pub enum RenderingError<'a> {
+pub enum RenderingError {
+    UnknownComponent {
+        name: String,
+        //instance_components: HashMap<&'a str, &'a str>,
+    },
+    UnknownInput {
+        name: String,
+        //inputs: HashMap<&'a str, &'a str>,
+    },
+    HitRecursionLimit {
+        component: String,
+        parent_component: Option<String>,
+    },
+}
+
+//impl Display for RenderingError<'_> {
+impl Display for RenderingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            //Self::UnknownComponent { name, instance_components } => write!(f, "Component not found in the instance components. Unknown component: {name}, Instance components: {:?}.", instance_components),
+            //Self::UnknownInput { name, inputs } => write!(f, "Input not found in the provided inputs. Unknown input: {name}, inputs: {:?}.", inputs),
+            Self::UnknownComponent { name } => write!(f, "Component not found in the instance components. Unknown component: {name}."),
+            Self::UnknownInput { name } => write!(f, "Input not found in the provided inputs. Unknown input: {name}."),
+            Self::HitRecursionLimit { component, parent_component } => write!(f, "The recursion limit has been hit while rendering '{component}'. Parent component: {:?}", parent_component),
+        }
+    }
+}
+
+//impl Error for RenderingError<'_> {
+impl Error for RenderingError {
+    fn description(&self) -> &str {
+        todo!()
     }
 }
 
@@ -65,12 +111,6 @@ pub struct VelInstance<'a> {
     recursion_limit: u8,
 }
 
-impl Display for VelInstance<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "hamburger")
-    }
-}
-
 impl<'a> VelInstance<'a> {
     pub fn new(components: HashMap<&'a str, &'a str>) -> Self {
         Self {
@@ -90,11 +130,12 @@ impl<'a> VelInstance<'a> {
     }
 
     pub fn render<F>(
-        &'_ self,
+        &'a self,
         component: String,
         inputs: HashMap<&str, &str>,
         parsing_event_callback: F,
-    ) -> String
+        //) -> Result<String, RenderingError<'a>>
+    ) -> Result<String, RenderingError>
     where
         F: Fn(Element) -> Option<Element> + std::marker::Copy,
     {
@@ -121,6 +162,8 @@ fn parse_variable(char_iterator: &mut Chars, inputs: &HashMap<&str, &str>) -> St
         .get(variable_name.as_str())
         .map(|value| value.to_string())
         .unwrap_or_else(|| format!("{{{}}}", variable_name))
+    // NOTE: Maybe offer a flag for strict or relaxed parsing, allowing unretrievable errors to
+    // return empty values
 }
 
 fn parse_tags(char_iterator: &mut Chars, inputs: &HashMap<&str, &str>) -> Vec<String> {
@@ -143,7 +186,8 @@ fn parse_tags(char_iterator: &mut Chars, inputs: &HashMap<&str, &str>) -> Vec<St
                         buffer.clear();
                     }
                     break;
-                }
+                } // NOTE: an error could be thrown here in a stricter parsing mode if this isnt
+                // present
                 '{' => buffer.push_str(&parse_variable(char_iterator, inputs)),
                 other_char => buffer.push(other_char),
             }
@@ -155,19 +199,22 @@ fn parse_tags(char_iterator: &mut Chars, inputs: &HashMap<&str, &str>) -> Vec<St
     }
 }
 
-fn render_recursively<F>(
-    parent: &VelInstance,
+fn render_recursively<'a, F>(
+    parent: &'a VelInstance,
     component: String,
     inputs: HashMap<&str, &str>,
     recursion_depth: u8,
     parsing_event_callback: F,
-) -> String
+    //) -> Result<String, RenderingError<'a>>
+) -> Result<String, RenderingError>
 where
     F: Fn(Element) -> Option<Element> + std::marker::Copy,
 {
     if recursion_depth == 0 {
-        // WARN: This should be an error informing the user they have hit the limit.
-        return String::new();
+        return Err(RenderingError::HitRecursionLimit {
+            component,
+            parent_component: None,
+        });
     }
 
     if let Some(page) = parent.components.get(component.as_str()) {
@@ -203,13 +250,17 @@ where
                     let collected_parts = parse_tags(&mut char_iterator, &inputs);
 
                     if collected_parts[0].chars().next().unwrap().is_uppercase() {
-                        return_page.push_str(&render_recursively(
+                        let mut result = render_recursively(
                             parent,
                             collected_parts[0].to_string(),
                             inputs.clone(),
                             recursion_depth - 1,
                             parsing_event_callback,
-                        ));
+                        );
+                        // TODO: Map parent here if its none.
+                        //result.map_err(|err| if err.kind())
+
+                        return_page.push_str(&result?);
                     }
                     // TODO: We can remove this check and instead just get the last element
                     else if !element_stack.is_empty() && collected_parts[0].contains('/') {
@@ -279,13 +330,12 @@ where
             }
         }
 
-        return_page
+        Ok(return_page)
     } else {
-        eprintln!(
-            "components: {:?}, input: {:?}",
-            parent.components, component
-        );
-        panic!("This is a very bad situation. The component probably does NOT exist.")
+        Err(RenderingError::UnknownComponent {
+            name: component,
+            //instance_components: parent.components.clone(),
+        })
     }
 }
 
@@ -297,7 +347,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn render_only() {
+    //fn render_only<'a>() -> Result<(), RenderingError<'a>> {
+    fn render_only<'a>() -> Result<(), RenderingError> {
         let test_instance = VelInstance::new(HashMap::from([(
             "Component",
             r#"
@@ -309,7 +360,7 @@ mod tests {
 
         let result = test_instance.render("Component".to_string(), HashMap::new(), |element| {
             Some(element)
-        });
+        })?;
         println!("render_only result: {}", result.trim());
         assert_eq!(
             result.trim(),
@@ -318,10 +369,13 @@ mod tests {
         </div>
         <p>hello, world</p>"#,
         );
+
+        Ok(())
     }
 
     #[test]
-    fn render_and_filter() {
+    //fn render_and_filter<'a>() -> Result<(), RenderingError<'a>> {
+    fn render_and_filter<'a>() -> Result<(), RenderingError> {
         let test_instance = VelInstance::new(HashMap::from([(
             "Component",
             r#"
@@ -336,9 +390,10 @@ mod tests {
                 return Some(element);
             }
             None
-        });
+        })?;
 
         println!("render_and_filter result: {}", result.trim());
         assert_eq!(result.trim(), "<p>hello, world</p>");
+        Ok(())
     }
 }

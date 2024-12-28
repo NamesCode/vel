@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    error::Error,
+    error,
     fmt::{self, Debug, Display},
     str::Chars,
 };
@@ -26,9 +26,16 @@ impl<T> ParsedState<T> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum Error {
+    Rendering(RenderingError),
+    Parsing(ParsingError),
+}
+
+#[derive(Debug, Clone)]
 pub enum ParsingError {
     UnclosedTag {
-        value: Vec<String>,
+        value: Element,
         //line: usize,
         //char: usize,
     },
@@ -43,12 +50,31 @@ pub enum RenderingError {
     },
     UnknownInput {
         name: String,
-        //inputs: HashMap<&'a str, &'a str>,
+        //inputs: HashMap<String, String>,
     },
     HitRecursionLimit {
         component: String,
         parent_component: Option<String>,
     },
+}
+
+impl Display for ParsingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnclosedTag { value } => write!(
+                f,
+                "Unclosed element. Expected closing tag: </{0}>. The offending element: {1:?}.",
+                value.name, value
+            ),
+        }
+    }
+}
+
+//impl Error for RenderingError<'_> {
+impl error::Error for ParsingError {
+    fn cause(&self) -> Option<&dyn error::Error> {
+        None
+    }
 }
 
 //impl Display for RenderingError<'_> {
@@ -65,9 +91,27 @@ impl Display for RenderingError {
 }
 
 //impl Error for RenderingError<'_> {
-impl Error for RenderingError {
-    fn description(&self) -> &str {
-        todo!()
+impl error::Error for RenderingError {
+    fn cause(&self) -> Option<&dyn error::Error> {
+        None
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parsing(error) => write!(f, "{}", error),
+            Self::Rendering(error) => write!(f, "{}", error),
+        }
+    }
+}
+
+impl error::Error for Error {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            Self::Parsing(error) => Some(error),
+            Self::Rendering(error) => Some(error),
+        }
     }
 }
 
@@ -106,13 +150,13 @@ impl Element {
 }
 
 #[derive(Debug)]
-pub struct VelInstance<'a> {
-    components: HashMap<&'a str, &'a str>,
+pub struct VelInstance {
+    components: HashMap<String, String>,
     recursion_limit: u8,
 }
 
-impl<'a> VelInstance<'a> {
-    pub fn new(components: HashMap<&'a str, &'a str>) -> Self {
+impl VelInstance {
+    pub fn new(components: HashMap<String, String>) -> Self {
         Self {
             components,
             recursion_limit: 15,
@@ -124,18 +168,18 @@ impl<'a> VelInstance<'a> {
         self
     }
 
-    pub fn extend(&mut self, components: HashMap<&'a str, &'a str>) -> &mut Self {
+    pub fn extend(&mut self, components: HashMap<String, String>) -> &mut Self {
         self.components.extend(components);
         self
     }
 
     pub fn render<F>(
-        &'a self,
+        &self,
         component: String,
-        inputs: HashMap<&str, &str>,
+        inputs: HashMap<String, String>,
         parsing_event_callback: F,
         //) -> Result<String, RenderingError<'a>>
-    ) -> Result<String, RenderingError>
+    ) -> Result<String, Error>
     where
         F: Fn(Element) -> Option<Element> + std::marker::Copy,
     {
@@ -154,9 +198,10 @@ impl<'a> VelInstance<'a> {
 // - [X] Core parsing
 // - [ ] Error handling
 // - [ ] Refactor
+// - [ ] Fix bug where you can only parse one element
 // - [ ] Variable passing (hx-params, slot)
 
-fn parse_variable(char_iterator: &mut Chars, inputs: &HashMap<&str, &str>) -> String {
+fn parse_variable(char_iterator: &mut Chars, inputs: &HashMap<String, String>) -> String {
     let variable_name: String = char_iterator.take_while(|char| char != &'}').collect();
     inputs
         .get(variable_name.as_str())
@@ -166,7 +211,7 @@ fn parse_variable(char_iterator: &mut Chars, inputs: &HashMap<&str, &str>) -> St
     // return empty values
 }
 
-fn parse_tags(char_iterator: &mut Chars, inputs: &HashMap<&str, &str>) -> Vec<String> {
+fn parse_tags(char_iterator: &mut Chars, inputs: &HashMap<String, String>) -> Vec<String> {
     if let Some(first_char) = char_iterator.next() {
         let mut in_quotes = false;
         let mut buffer = String::from(first_char);
@@ -199,22 +244,22 @@ fn parse_tags(char_iterator: &mut Chars, inputs: &HashMap<&str, &str>) -> Vec<St
     }
 }
 
-fn render_recursively<'a, F>(
-    parent: &'a VelInstance,
+fn render_recursively<F>(
+    parent: &VelInstance,
     component: String,
-    inputs: HashMap<&str, &str>,
+    inputs: HashMap<String, String>,
     recursion_depth: u8,
     parsing_event_callback: F,
     //) -> Result<String, RenderingError<'a>>
-) -> Result<String, RenderingError>
+) -> Result<String, Error>
 where
     F: Fn(Element) -> Option<Element> + std::marker::Copy,
 {
     if recursion_depth == 0 {
-        return Err(RenderingError::HitRecursionLimit {
+        return Err(Error::Rendering(RenderingError::HitRecursionLimit {
             component,
             parent_component: None,
-        });
+        }));
     }
 
     if let Some(page) = parent.components.get(component.as_str()) {
@@ -263,9 +308,8 @@ where
                         return_page.push_str(&result?);
                     }
                     // TODO: We can remove this check and instead just get the last element
-                    else if !element_stack.is_empty() && collected_parts[0].contains('/') {
-                        if collected_parts[0] == format!("/{}", element_stack.last().unwrap().name)
-                        {
+                    else if let Some(last_element) = element_stack.last() {
+                        if collected_parts[0] == format!("/{}", last_element.name) {
                             if let Some(mut element) = element_stack.pop() {
                                 match element.value {
                                     ParsedState::Parsed(ref mut value) => {
@@ -287,6 +331,10 @@ where
                                     }
                                 }
                             }
+                        } else {
+                            return Err(Error::Parsing(ParsingError::UnclosedTag {
+                                value: last_element.clone(),
+                            }));
                         }
                     } else {
                         let mut element = Element {
@@ -332,10 +380,10 @@ where
 
         Ok(return_page)
     } else {
-        Err(RenderingError::UnknownComponent {
+        Err(Error::Rendering(RenderingError::UnknownComponent {
             name: component,
             //instance_components: parent.components.clone(),
-        })
+        }))
     }
 }
 
@@ -350,12 +398,12 @@ mod tests {
     //fn render_only<'a>() -> Result<(), RenderingError<'a>> {
     fn render_only<'a>() -> Result<(), RenderingError> {
         let test_instance = VelInstance::new(HashMap::from([(
-            "Component",
+            "Component".to_string(),
             r#"
         <div test>
             <span style='color: red'>this is the inside text</span>, I sure do hope nothing happens to it
         </div>
-        <p>hello, world</p>"#,
+        <p>hello, world</p>"#.to_string(),
         )]));
 
         let result = test_instance.render("Component".to_string(), HashMap::new(), |element| {
@@ -377,12 +425,12 @@ mod tests {
     //fn render_and_filter<'a>() -> Result<(), RenderingError<'a>> {
     fn render_and_filter<'a>() -> Result<(), RenderingError> {
         let test_instance = VelInstance::new(HashMap::from([(
-            "Component",
+            "Component".to_string(),
             r#"
         <div test>
             <span style='color: red'>this is the inside text</span>, I sure do hope nothing happens to it
         </div>
-        <p>hello, world</p>"#,
+        <p>hello, world</p>"#.to_string(),
         )]));
 
         let result = test_instance.render("Component".to_string(), HashMap::new(), |element| {

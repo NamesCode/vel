@@ -1,21 +1,21 @@
+// SPDX-FileCopyrightText: 2025 Name <lasagna@garfunkle.space>
+//
+// SPDX-License-Identifier: EUPL-1.2
+
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Dom {
-    tree: Arc<Element>,
+    pub(crate) tree: Arc<Element>,
 }
 
 impl Dom {
-    pub fn new(component_name: String) -> Self {
+    pub fn new(root: Element) -> Self {
         Dom {
-            tree: Arc::new(Element::new(
-                component_name,
-                HashMap::new(),
-                ElementType::Document,
-            )),
+            tree: Arc::new(root),
         }
     }
 }
@@ -24,18 +24,16 @@ impl Dom {
 pub enum ElementType {
     /// Page doctype
     Doctype(String),
-    /// The page document. This is always the first node.
+    /// Root tag for a document
     Document,
     /// Node type elements
     Node,
-    // HACK: I really don't like this interface and I think it's going to make a rough api to use.
-    // Atleast I can hide it with interfaces
-    /// Usize should always be derived with `Arc::as_ptr(<First "Document" ElementType>) as usize`
-    Slot(RwLock<Vec<(usize, Arc<Element>)>>),
+    /// The string is always the component name of the component that slotted it
+    Slot(RwLock<Vec<(String, Arc<Element>)>>),
     /// Just text. Concats to Variable
     Text(String),
     /// If a string comes before or after this during rendering, they will be attached to eachother
-    Variable(String),
+    Variable,
     /// Void type elements
     Void,
 }
@@ -58,10 +56,7 @@ impl Clone for ElementType {
 impl ElementType {
     /// Helper function for building a slot
     pub fn slot_builder(dom: Dom, element: Arc<Element>) -> ElementType {
-        ElementType::Slot(RwLock::new(vec![(
-            Arc::as_ptr(&dom.tree) as usize,
-            element,
-        )]))
+        ElementType::Slot(RwLock::new(vec![(dom.name, element)]))
     }
 }
 
@@ -72,18 +67,21 @@ pub struct Element {
     /// The element name; e.g. <p> = "p"
     pub name: String,
     /// The elements attributes; e.g. <p style='color: red'> = ("style", "color: red")
-    pub attributes: HashMap<String, String>,
+    pub attributes: HashMap<String, Vec<Arc<Element>>>,
     /// The elements contained value, if it is None then that just means it has not been parsed
     /// yet.
     pub kind: ElementType,
 }
 
 impl Element {
-    pub fn new(name: String, attributes: HashMap<String, String>, kind: ElementType) -> Self {
+    pub fn new(
+        name: String,
+        kind: ElementType,
+    ) -> Self {
         Element {
             children: vec![],
             name,
-            attributes,
+            attributes: HashMap::new(),
             kind,
         }
     }

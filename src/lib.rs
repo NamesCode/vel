@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Name <lasagna@garfunkle.space>
+//
+// SPDX-License-Identifier: EUPL-1.2
+
 mod ast;
 mod parsing;
 mod rendering;
@@ -10,6 +14,7 @@ use std::{borrow::Cow, collections::HashMap};
 
 /// This'd make a bad partner :/
 pub(crate) type LazyDom = ParseStatus<String, Dom>;
+pub(crate) type ComponentsCache = HashMap<String, LazyDom>;
 
 #[derive(Debug)]
 pub(crate) enum ParseStatus<T, U> {
@@ -19,13 +24,13 @@ pub(crate) enum ParseStatus<T, U> {
 
 #[derive(Debug)]
 pub struct VelInstance {
-    components: HashMap<String, LazyDom>,
+    components: ComponentsCache,
 }
 
 impl VelInstance {
     pub fn new(components: HashMap<String, String>) -> Self {
         Self {
-            components: HashMap::from_iter(
+            components: ComponentsCache::from_iter(
                 components
                     .into_iter()
                     .map(|(key, value)| (key, LazyDom::Unparsed(value))),
@@ -43,7 +48,7 @@ impl VelInstance {
     }
 
     pub fn render<F>(
-        &self,
+        &mut self,
         component: String,
         inputs: HashMap<String, String>,
         rendering_callback: F,
@@ -69,8 +74,13 @@ impl VelInstance {
             "hello world",
         );
 
-        parsing::parse(&component, &self.components);
+        parsing::parse(&component, &mut self.components)?;
         //rendering::render(&dom, Cow::Borrowed(&inputs), &mut self.cache);
         Ok(String::new())
+    }
+
+    pub fn parse(&mut self, component: String) -> Result<(), ()> {
+        parsing::parse(&component, &mut self.components)?;
+        Ok(())
     }
 }

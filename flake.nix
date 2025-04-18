@@ -11,25 +11,40 @@
       nixpkgs,
     }:
     let
-      system = "aarch64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      forAllSystems = nixpkgs.lib.genAttrs [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
     in
     {
-      devShells.aarch64-linux.default = pkgs.mkShell {
-        nativeBuildInputs = with pkgs; [
-          # Rust tooling
-          rustc
-          rustfmt
-          cargo
-          clippy
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            nativeBuildInputs = with pkgs; [
+              # Rust tooling
+              rustc
+              rustfmt
+              cargo
+              clippy
 
-          # LSPs
-          rust-analyzer
-          emmet-language-server
-          nodePackages.vscode-langservers-extracted
-        ];
+              # Linter
+              reuse
 
-        shellHook = ''echo "You have now entered the dev shell for Vel, exit at any time."'';
-      };
+              # LSPs
+              rust-analyzer
+              emmet-language-server
+              nodePackages.vscode-langservers-extracted
+            ];
+
+            shellHook = ''echo "You have now entered the dev shell for Vel, exit at any time."'';
+          };
+        }
+      );
     };
 }

@@ -1,177 +1,220 @@
+// SPDX-FileCopyrightText: 2025 Name <lasagna@garfunkle.space>
+//
+// SPDX-License-Identifier: EUPL-1.2
+
 use crate::{
     ast::{Dom, Element, ElementType},
-    LazyDom,
+    ComponentsCache, LazyDom,
 };
-use std::{borrow::Cow, collections::HashMap, path::Component, str::Chars};
+use std::{
+    borrow::BorrowMut,
+    collections::{HashMap, HashSet},
+    str::Chars,
+    sync::{Arc, LazyLock},
+};
 
-// WARN: REFACTOR ASAP. THIS CODE IS AWFUL AND UNREADABLE.
-//       FAILURE TO DO SO WILL KILL THE PROJECT
+/// A lazily evaluated static of all HTML5 void elements as of 2025-04-17
+static VOID_ELEMENTS: LazyLock<HashSet<&str>> = LazyLock::new(|| {
+    HashSet::from([
+        "!DOCTYPE", "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+        "param", "source", "track", "wbr",
+    ])
+});
+
+enum PushTarget {
+    Children,
+    Attributes((String, Vec<Arc<Element>>)),
+}
+
+struct BufferFrame {
+    current_element: Element,
+    push_to: PushTarget,
+    page_index: usize,
+    string_buffer: String,
+}
+
+impl BufferFrame {
+    fn new(dom: Element) -> Self {
+        BufferFrame {
+            current_element: dom,
+            push_to: PushTarget::Children,
+            page_index: 0,
+            string_buffer: String::new(),
+        }
+    }
+}
 
 // TODO:
 // - [X] Core parsing
 // - [ ] Error handling *You aren't ever doing this you fucking moron*
-// - [ ] Fix bug where you can only parse one element
+// - [X] Fix bug where you can only parse one element
 // - [ ] Variable passing (hx-params, slot)
 
-fn parse_variable(char_iterator: &mut Chars, inputs: &HashMap<String, String>) -> String {
-    let variable_name: String = char_iterator.take_while(|char| char != &'}').collect();
-    inputs
-        .get(variable_name.as_str())
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| format!("{{{}}}", variable_name))
-    //TODO: Maybe offer a flag for strict or relaxed parsing, allowing unretrievable errors to
-    // return empty values
+fn parse_variable(char_iterator: &mut Chars, /*, inputs: &HashMap<String, String>*/) -> Element {
+    Element::new(
+        char_iterator.take_while(|char| char != &'}').collect(),
+        ElementType::Variable,
+    )
 }
 
-fn parse_tags(char_iterator: &mut Chars, inputs: &HashMap<String, String>) -> Vec<String> {
-    if let Some(first_char) = char_iterator.next() {
-        let mut in_quotes = false;
-        let mut buffer = String::from(first_char);
-        let mut collected_parts = Vec::new();
+fn parse_attribute(char_iterator: &mut Chars) -> Vec<Arc<Element>> {
+    let mut in_quotes = false;
+    let mut buffer = String::new();
+    let mut collected_elements = Vec::new();
 
-        // parses the first part of the element
-        while let Some(char) = char_iterator.next() {
-            match char {
-                '"' | '\'' => in_quotes = !in_quotes,
-                ' ' if !in_quotes && !buffer.is_empty() => {
-                    collected_parts.push(buffer.clone());
-                    buffer.clear()
+    // parses the first part of the element
+    while let Some(char) = char_iterator.next() {
+        match char {
+            '"' | '\'' => in_quotes = !in_quotes,
+            ' ' if !in_quotes => break,
+            '<' if !in_quotes => todo!(),
+            '>' if !in_quotes => {
+                if !buffer.is_empty() {
+                    //collected_parts.push(buffer.clone());
+                    buffer.clear();
                 }
-                // NOTE: an error could be thrown here in a stricter parsing mode if this isnt present
-                '>' if !in_quotes => {
-                    if !buffer.is_empty() {
-                        collected_parts.push(buffer.clone());
-                        buffer.clear();
-                    }
-                    break;
-                }
-                '{' => buffer.push_str(&parse_variable(char_iterator, inputs)),
-                other_char => buffer.push(other_char),
+                break;
             }
+            '{' => collected_elements.push(Arc::new(parse_variable(char_iterator))),
+            other_char => buffer.push(other_char),
         }
-
-        collected_parts
-    } else {
-        vec!["<".to_string()]
     }
+
+    collected_elements
 }
 
-pub(crate) fn parse(component: &str, components: &HashMap<String, LazyDom>) -> Result<(), ()> {
-    let mut stack = vec![];
+pub(crate) fn parse<'a>(component: &str, components: &mut ComponentsCache) -> Result<(), ()> {
+    let mut buffer_stack = vec![BufferFrame::new(Element::new(
+        component.to_string(),
+        ElementType::Document,
+    ))];
+    let mut page_stack = vec![];
 
-    match components.get(component) {
-        Some(LazyDom::Parsed(dom)) => return Ok(()),
-        Some(LazyDom::Unparsed(page)) => stack.push((component.to_string(), page.chars(), inputs)),
-        None => return Err(()),
+    let component_handle = components.get_mut(component).ok_or(())?;
+
+    let page = if let LazyDom::Unparsed(page) = component_handle {
+        std::mem::take(page)
+    } else {
+        #[cfg(debug_assertions)]
+        eprintln!(
+                "The tree has already been parsed. You should always check first so you can use the cached version"
+            );
+
+        return Ok(());
     };
 
-    let mut buffer = String::new();
+    page_stack.push(page.chars());
 
-    while let Some((component_name, char_iterator, inputs)) = stack.pop() {
-        let mut dom = Dom::new(component_name);
+    'buffer_loop: while let Some(mut frame) = buffer_stack.pop() {
+        let page_index = frame.page_index;
+        let char_iterator = &mut page_stack[page_index];
 
-        while let Some(char) = char_iterator.next() {
+        'char_loop: while let Some(char) = char_iterator.next() {
             match char {
-                '{' => {
-                    let variable_data = parse_variable(&mut char_iterator, &inputs);
-
-                    if element_stack.is_empty() {
-                        return_page.push_str(&variable_data);
-                    } else {
-                        buffer.push_str(&variable_data);
-                    }
-                }
+                '{' => match frame.push_to {
+                    PushTarget::Children => frame
+                        .current_element
+                        .children
+                        .push(Arc::new(parse_variable(char_iterator))),
+                    PushTarget::Attributes((name, elements)) => todo!(),
+                },
                 '<' => {
-                    if let Some(last_element) = element_stack.last_mut() {
-                        match last_element.value {
-                            ParsedState::Parsed(ref mut value) => {
-                                value.push_str(&std::mem::take(&mut buffer))
+                    let mut open = true;
+
+                    let name: String = char_iterator
+                        .take_while(|char| {
+                            if char == &'>' {
+                                open = false;
+                                false
+                            } else {
+                                char != &' '
                             }
-                            ParsedState::Unparsed => {
-                                last_element.value =
-                                    ParsedState::Parsed(std::mem::take(&mut buffer))
-                            }
-                        };
+                        })
+                        .collect();
+
+                    let push_to = if open {
+                        PushTarget::Attributes((String::new(), vec![]))
+                    } else {
+                        PushTarget::Children
                     };
-                    let collected_parts = parse_tags(&mut char_iterator, &inputs);
 
-                    if collected_parts[0].chars().next().unwrap().is_uppercase() {
-                        let result = parse(
-                            &collected_parts[0].to_string(),
-                            inputs.clone(),
-                            parsing_event_callback,
-                        );
-                        // TODO: Map parent here if its none.
-                        //result.map_err(|err| if err.kind())
+                    // Determine the kind
+                    match name.chars().next() {
+                        Some(char) if char.is_uppercase() => {
+                            buffer_stack.push(frame);
 
-                        return_page.push_str(&result?);
-                    }
-                    // TODO: We can remove this check and instead just get the last element
-                    else if let Some(last_element) = element_stack.last() {
-                        if collected_parts[0] == format!("/{}", last_element.name) {
-                            if let Some(mut element) = element_stack.pop() {
-                                match element.value {
-                                    ParsedState::Parsed(ref mut value) => {
-                                        value.push_str(&std::mem::take(&mut buffer))
-                                    }
-                                    ParsedState::Unparsed => {
-                                        element.value =
-                                            ParsedState::Parsed(std::mem::take(&mut buffer))
+                            match components.get(&name) {
+                                Some(LazyDom::Unparsed(page)) => {
+                                    page_stack.push(page.chars());
+
+                                    buffer_stack.push(BufferFrame {
+                                        current_element: Element::new(name, ElementType::Document),
+                                        push_to,
+                                        page_index: page_stack.len(),
+                                        string_buffer: String::new(),
+                                    });
+                                }
+                                Some(LazyDom::Parsed(dom)) => {
+                                    buffer_stack.push(BufferFrame {
+                                        current_element: (*dom.tree).clone(),
+                                        push_to,
+                                        page_index,
+                                        string_buffer: String::new(),
+                                    });
+                                }
+                                None => todo!(),
+                            }
+                        }
+                        Some(char) if char == '/' => {
+                            // BUG: This will not work if this is the first frame...
+                            if let Some(previous_frame) = buffer_stack.last_mut() {
+                                match &previous_frame.push_to {
+                                    PushTarget::Children => previous_frame
+                                        .current_element
+                                        .children
+                                        .push(Arc::new(frame.current_element)),
+                                    PushTarget::Attributes((name, elements)) => todo!(),
+                                }
+                            };
+                        }
+                        Some(_) if VOID_ELEMENTS.contains(name.as_str()) => match push_to {
+                            PushTarget::Children => {
+                                if let Some(previous_frame) = buffer_stack.last_mut() {
+                                    match &previous_frame.push_to {
+                                        PushTarget::Children => previous_frame
+                                            .current_element
+                                            .children
+                                            .push(Arc::new(Element::new(name, ElementType::Void))),
+                                        PushTarget::Attributes((name, elements)) => todo!(),
                                     }
                                 };
-
-                                if element_stack.is_empty() {
-                                    if !element.dropping {
-                                        return_page.push_str(&element.serialise());
-                                    }
-                                } else {
-                                    if !element.dropping {
-                                        buffer.push_str(&element.serialise());
-                                    }
-                                }
                             }
+                            PushTarget::Attributes((_, _)) => {
+                                buffer_stack.push(frame);
+                                buffer_stack.push(BufferFrame {
+                                    current_element: Element::new(name, ElementType::Void),
+                                    push_to,
+                                    page_index,
+                                    string_buffer: String::new(),
+                                })
+                            }
+                        },
+                        Some(_) => {
+                            ElementType::Node;
                         }
-                    } else {
-                        let mut element = Element {
-                            name: collected_parts[0].to_string(),
-                            attributes: HashMap::from_iter(
-                                collected_parts
-                                    .iter()
-                                    .skip(1)
-                                    .filter(|attribute| attribute != &"/")
-                                    .map(|attribute| {
-                                        // Takes Element attributes and splits them by the =. If they dont
-                                        // contain a = then it just takes the attribute name.
-                                        // E.g. <button disabled command='toggle_popover'>...
-                                        // The disabled will become ("disabled", "disabled") and the command
-                                        // will become ("command", "toggle_popover")
-                                        let (key, value) = attribute
-                                            .split_once('=')
-                                            .unwrap_or((attribute, attribute));
-                                        (key.to_string(), value.to_string())
-                                    }),
-                            ),
-                            ..Default::default()
-                        };
+                        None => break 'char_loop,
+                    };
 
-                        if let Some(event_result) = parsing_event_callback(element.clone()) {
-                            element_stack.push(event_result);
-                        } else {
-                            element.dropping = true;
-                            element_stack.push(element);
-                        }
-                    }
+                    continue 'buffer_loop;
                 }
-
-                other_char => {
-                    if element_stack.is_empty() {
-                        return_page.push(other_char);
-                    } else {
-                        buffer.push(other_char);
-                    }
-                }
+                other_char => frame.string_buffer.push(other_char),
             }
         }
+
+        // Since the dom and char_iterator are tied, we know that once the iterator loop is done,
+        // so is the dom parsing.
+        let _ = page_stack.remove(page_index);
+        //*component_handle = LazyDom::Parsed(dom);
     }
 
     Ok(())

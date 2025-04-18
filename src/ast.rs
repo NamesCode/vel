@@ -20,10 +20,9 @@ impl Dom {
     }
 }
 
+// TODO: Make this a trait instead
 #[derive(Debug)]
 pub enum ElementType {
-    /// Page doctype
-    Doctype(String),
     /// Root tag for a document
     Document,
     /// Node type elements
@@ -56,7 +55,7 @@ impl Clone for ElementType {
 impl ElementType {
     /// Helper function for building a slot
     pub fn slot_builder(dom: Dom, element: Arc<Element>) -> ElementType {
-        ElementType::Slot(RwLock::new(vec![(dom.name, element)]))
+        ElementType::Slot(RwLock::new(vec![(dom.tree.name.clone(), element)]))
     }
 }
 
@@ -67,21 +66,18 @@ pub struct Element {
     /// The element name; e.g. <p> = "p"
     pub name: String,
     /// The elements attributes; e.g. <p style='color: red'> = ("style", "color: red")
-    pub attributes: HashMap<String, Vec<Arc<Element>>>,
+    pub attributes: HashMap<String, Vec<Element>>,
     /// The elements contained value, if it is None then that just means it has not been parsed
     /// yet.
     pub kind: ElementType,
 }
 
 impl Element {
-    pub fn new(
-        name: String,
-        kind: ElementType,
-    ) -> Self {
+    pub fn new(name: String, attributes: HashMap<String, Vec<Element>>, kind: ElementType) -> Self {
         Element {
             children: vec![],
             name,
-            attributes: HashMap::new(),
+            attributes,
             kind,
         }
     }

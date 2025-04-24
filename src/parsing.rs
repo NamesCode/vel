@@ -10,9 +10,8 @@ use frames::PageFrame;
 use std::{
     collections::HashMap,
     ops::Deref,
-    pin::Pin,
-    str::Chars,
     sync::{Arc, Mutex},
+    vec::IntoIter,
 };
 
 /// A lazily evaluated static of all HTML5 void elements as of 2025-04-17
@@ -21,10 +20,27 @@ const VOID_ELEMENTS: [&str; 15] = [
     "param", "source", "track", "wbr",
 ];
 
+// Wow babes first polyfill!!
+/// HACK: soooooooo, Rust std has an iterator called IntoChars BUTTT it's nightly so we have to
+/// handroll our own until it becomes stable as I aint forcing someone to use nightly for my
+/// shitass templating language
+type IntoChars = IntoIter<char>;
+
+trait TemporaryBSUntilIntoCharsIsNotUnstable {
+    fn into_chars(self) -> IntoChars;
+}
+
+impl TemporaryBSUntilIntoCharsIsNotUnstable for String {
+    fn into_chars(self) -> IntoChars {
+        self.chars().collect::<Vec<char>>().into_iter()
+    }
+}
+
 /// We modularize the page logic so that we can safely handle all edge cases where the type *could*
 /// error in theory but wont as it's an unreachable!() state
 mod frames {
-    use super::{Arc, Chars, Document, Element, Mpreggable, Mutex};
+
+    use super::{Arc, Document, Element, IntoChars, Mpreggable, Mutex};
 
     #[derive(PartialEq, Eq)]
     enum PushTarget {
@@ -33,17 +49,15 @@ mod frames {
         Slot,
     }
 
-    pub type PageStack<'a> = Vec<PageFrame<'a>>;
-
-    pub struct PageFrame<'a> {
+    pub struct PageFrame {
         mpregee: Mpreggable,
-        pub page: Arc<Mutex<Chars<'a>>>,
+        pub page: Arc<Mutex<IntoChars>>,
         push_target: PushTarget,
         pub string_buffer: String,
     }
 
-    impl<'a> PageFrame<'a> {
-        pub fn new_document(name: String, page: Chars<'a>) -> Self {
+    impl PageFrame {
+        pub fn new_document(name: String, page: IntoChars) -> Self {
             PageFrame {
                 mpregee: Mpreggable::Document(Document::new(name)),
                 page: Arc::new(Mutex::new(page)),
@@ -52,7 +66,7 @@ mod frames {
             }
         }
 
-        pub fn new_slot(document: Document, page: Arc<Mutex<Chars<'a>>>) -> Self {
+        pub fn new_slot(document: Document, page: Arc<Mutex<IntoChars>>) -> Self {
             PageFrame {
                 mpregee: Mpreggable::Document(document),
                 page,
@@ -61,7 +75,7 @@ mod frames {
             }
         }
 
-        pub fn new_child(element: Mpreggable, page: Arc<Mutex<Chars<'a>>>) -> Self {
+        pub fn new_child(element: Mpreggable, page: Arc<Mutex<IntoChars>>) -> Self {
             PageFrame {
                 mpregee: element,
                 page,
@@ -94,7 +108,7 @@ mod frames {
         pub fn try_close(
             self,
             name: String,
-            parent_frame: Option<&mut PageFrame<'a>>,
+            parent_frame: Option<&mut PageFrame>,
         ) -> Result<Option<Document>, ()> {
             if self.mpregee.get_name() == name {
                 match self.mpregee {
@@ -217,14 +231,16 @@ impl From<Mpreggable> for Element {
 // - [X] Fix bug where you can only parse one element
 // - [ ] Variable passing (hx-params, slot)
 
-fn parse_variable(char_iterator: &mut Chars, /*, inputs: &HashMap<String, String>*/) -> Variable {
+fn parse_variable(
+    char_iterator: &mut IntoChars, /*, inputs: &HashMap<String, String>*/
+) -> Variable {
     Variable {
         name: char_iterator.take_while(|char| char != &'}').collect(),
     }
 }
 
 // WARN: Wtf is this shit ass code
-fn parse_attributes(char_iterator: &mut Chars) -> Attributes {
+fn parse_attributes(char_iterator: &mut IntoChars) -> Attributes {
     HashMap::from_iter(
         char_iterator
             .take_while(|char| char != &'>')
@@ -269,10 +285,10 @@ enum ParsingAction {
     ParseInnards(Mpreggable),
     Mpreg(Element),
     Close(String),
-    ExhaustedChars,
+    ExhaustedIntoChar,
 }
 
-fn parse_element(char_iterator: &mut Chars) -> ParsingAction {
+fn parse_element(char_iterator: &mut IntoChars) -> ParsingAction {
     let mut open = true;
 
     let name: String = char_iterator
@@ -324,15 +340,12 @@ fn parse_element(char_iterator: &mut Chars) -> ParsingAction {
             attributes,
             children: vec![],
         })),
-        None => ParsingAction::ExhaustedChars,
+        None => ParsingAction::ExhaustedIntoChar,
     }
 }
 
 pub(crate) fn parse(component: &str, components: &mut ComponentsCache) -> Result<(), ()> {
-    let mut page_stack = vec![];
-    let component_handle = components.remove(component).ok_or(())?;
-
-    let page = if let LazyDom::Unparsed(page) = component_handle {
+    let page = if let LazyDom::Unparsed(page) = components.get_mut(component).ok_or(())? {
         page
     } else {
         #[cfg(debug_assertions)]
@@ -343,10 +356,9 @@ pub(crate) fn parse(component: &str, components: &mut ComponentsCache) -> Result
         return Ok(());
     };
 
-    page_stack.push(page);
     let mut frame_stack = vec![PageFrame::new_document(
         component.to_string(),
-        page_stack[0].chars(),
+        std::mem::take(page).into_chars(),
     )];
 
     'frame_loop: while let Some(mut frame) = frame_stack.pop() {
@@ -367,18 +379,17 @@ pub(crate) fn parse(component: &str, components: &mut ComponentsCache) -> Result
                         frame_stack.push(frame);
 
                         if let Mpreggable::Document(document) = element {
-                            match components.remove(&document.name) {
+                            match components.get_mut(&document.name) {
                                 Some(LazyDom::Parsed(dom)) => {
                                     frame_stack
                                         .push(PageFrame::new_slot(dom.tree.deref().clone(), page));
                                 }
                                 Some(LazyDom::Unparsed(dom_page)) => {
-                                    page_stack.push(dom_page);
                                     let name = document.name.clone();
                                     frame_stack.push(PageFrame::new_slot(document, page));
                                     frame_stack.push(PageFrame::new_document(
                                         name,
-                                        page_stack[page_stack.len()].chars(),
+                                        std::mem::take(dom_page).into_chars(),
                                     ));
                                 }
                                 None => return Err(()),
@@ -415,7 +426,7 @@ pub(crate) fn parse(component: &str, components: &mut ComponentsCache) -> Result
 
                         continue 'frame_loop;
                     }
-                    ParsingAction::ExhaustedChars => break 'char_loop,
+                    ParsingAction::ExhaustedIntoChar => break 'char_loop,
                 },
                 '\\' => {
                     if let Some(char) = char_iterator.next() {

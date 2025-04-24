@@ -9,14 +9,14 @@ mod rendering;
 //#[cfg(test)]
 //mod tests;
 
-use ast::{Dom, Element};
-use std::{borrow::Cow, collections::HashMap};
+use ast::{elements::Element, Dom};
+use std::collections::HashMap;
 
 /// This'd make a bad partner :/
 pub(crate) type LazyDom = ParseStatus<String, Dom>;
 pub(crate) type ComponentsCache = HashMap<String, LazyDom>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ParseStatus<T, U> {
     Unparsed(T),
     Parsed(U),
@@ -84,3 +84,6 @@ impl VelInstance {
         Ok(())
     }
 }
+
+#[test]
+fn i_want_to_kms() {}

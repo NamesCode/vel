@@ -2,83 +2,95 @@
 //
 // SPDX-License-Identifier: EUPL-1.2
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use elements::Document;
+use std::{fmt::Debug, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct Dom {
-    pub(crate) tree: Arc<Element>,
+    pub(crate) tree: Arc<Document>,
 }
 
 impl Dom {
-    pub fn new(root: Element) -> Self {
+    pub fn new(root: Document) -> Self {
         Dom {
             tree: Arc::new(root),
         }
     }
 }
 
-// TODO: Make this a trait instead
-#[derive(Debug)]
-pub enum ElementType {
-    /// Root tag for a document
-    Document,
-    /// Node type elements
-    Node,
-    /// The string is always the component name of the component that slotted it
-    Slot(RwLock<Vec<(String, Arc<Element>)>>),
-    /// Just text. Concats to Variable
-    Text(String),
-    /// If a string comes before or after this during rendering, they will be attached to eachother
-    Variable,
-    /// Void type elements
-    Void,
-}
+pub mod elements {
+    use super::Arc;
+    use std::{collections::HashMap, fmt::Debug};
 
-impl Clone for ElementType {
-    fn clone(&self) -> Self {
-        match self {
-            ElementType::Slot(lock) => match lock.read() {
-                Ok(value) => ElementType::Slot(RwLock::new(value.clone())),
-                Err(error) => {
-                    eprintln!("The lock was poisoned when attempting to clone the RwLock of a Slot element. This is an issue of Vel, and probably not you, the user, so please report this. Here is the full error: {}", error);
-                    ElementType::Slot(RwLock::new(vec![]))
-                }
-            },
-            other => other.clone(),
+    #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+    pub enum AttributeValues {
+        Text(Text),
+        Variable(Variable),
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum Element {
+        Document(Document),
+        Node(Node),
+        Slot(Slot),
+        Text(Text),
+        /// If a string comes before or after this during rendering, they will be attached to eachother
+        Variable(Variable),
+        Void(Void),
+    }
+
+    /// Just a shorthand alias of HashMap<String, AttributeValues> for use within the crate
+    pub(crate) type Attributes = HashMap<String, Vec<AttributeValues>>;
+
+    /// The document element for the page.
+    /// Because this is always the top level element, we can clone it for storing Dom-depending state data here for
+    /// other elements like Slot or attribute inputs!
+    #[derive(Debug, Clone)]
+    pub struct Document {
+        pub name: String,
+        pub attributes: Attributes,
+        pub slot_content: HashMap<Vec<AttributeValues>, Vec<Arc<Element>>>,
+        pub children: Vec<Arc<Element>>,
+    }
+
+    impl Document {
+        pub fn new(name: String) -> Self {
+            Self {
+                name,
+                attributes: Attributes::new(),
+                slot_content: HashMap::new(),
+                children: vec![],
+            }
         }
     }
-}
 
-impl ElementType {
-    /// Helper function for building a slot
-    pub fn slot_builder(dom: Dom, element: Arc<Element>) -> ElementType {
-        ElementType::Slot(RwLock::new(vec![(dom.tree.name.clone(), element)]))
+    #[derive(Debug, Clone)]
+    pub struct Node {
+        pub name: String,
+        pub attributes: Attributes,
+        pub children: Vec<Arc<Element>>,
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct Element {
-    /// The elements children
-    pub children: Vec<Arc<Element>>,
-    /// The element name; e.g. <p> = "p"
-    pub name: String,
-    /// The elements attributes; e.g. <p style='color: red'> = ("style", "color: red")
-    pub attributes: HashMap<String, Vec<Element>>,
-    /// The elements contained value, if it is None then that just means it has not been parsed
-    /// yet.
-    pub kind: ElementType,
-}
+    #[derive(Debug, Clone)]
+    pub struct Slot {
+        pub name: Vec<AttributeValues>,
+        pub attributes: Attributes,
+        pub children: Vec<Arc<Element>>,
+    }
 
-impl Element {
-    pub fn new(name: String, attributes: HashMap<String, Vec<Element>>, kind: ElementType) -> Self {
-        Element {
-            children: vec![],
-            name,
-            attributes,
-            kind,
-        }
+    #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+    pub struct Text {
+        pub value: String,
+    }
+
+    #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+    pub struct Variable {
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Void {
+        pub name: String,
+        pub attributes: Attributes,
     }
 }

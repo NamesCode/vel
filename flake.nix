@@ -3,12 +3,20 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    zig2nix.url = "github:Cloudef/zig2nix";
+    nvame.url = "github:namescode/nvame";
+  };
+
+  nixConfig = {
+    extra-substituters = [ "https://zig2nix.cachix.org" ];
   };
 
   outputs =
     {
       self,
       nixpkgs,
+      nvame,
+      zig2nix,
     }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [
@@ -27,22 +35,29 @@
         {
           default = pkgs.mkShell {
             nativeBuildInputs = with pkgs; [
+              (nvame.packages.${system}.mainConfig)
+
               # Rust tooling
               rustc
               rustfmt
               cargo
               clippy
 
+              # Zig tooling
+              (zig2nix.packages.${system}.zig-latest)
+              # zig
+
               # Linter
               reuse
 
               # LSPs
               rust-analyzer
+              zls
               emmet-language-server
               nodePackages.vscode-langservers-extracted
             ];
 
-            shellHook = ''echo "You have now entered the dev shell for Vel, exit at any time."'';
+            shellHook = ''echo "You have now entered the dev shell for Zest, exit at any time."'';
           };
         }
       );
